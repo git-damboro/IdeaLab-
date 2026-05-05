@@ -1,0 +1,9 @@
+queryNode:
+  cache:
+    memoryLimit: 400MiB
+    cacheSize: 400MiB
+dataNode:
+  memoryLimit: 200MiB
+rocksmq:
+  retentionSizeInMB: 300
+  retentionTimeInMinutes: 60

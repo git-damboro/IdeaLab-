@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+streamlit
+pymongo
+pymilvus
+sentence-transformers
+bibtexparser
+openai
+rank_bm25
+jieba
+tqdm
+pydantic
+requests
+passlib[bcrypt]
+python-jose[cryptography]
+python-multipart
+python-dotenv
