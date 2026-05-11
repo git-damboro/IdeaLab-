@@ -1,0 +1,30 @@
+# 环境变量（含密钥，绝不能上传）
+.env
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.bak
+
+# Node 依赖
+node_modules/
+
+# 前端构建产物
+dist/
+
+# Docker 持久化数据
+volumes/
+
+# 用户上传数据
+data/uploads/
+
+# IDE / 工具
+.vscode/
+.claude/
+
+# 临时文件
+tmp/
+*.zip
+*.tar
+*.rar
