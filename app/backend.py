@@ -17,6 +17,9 @@ import bcrypt
 import concurrent.futures
 import threading
 
+if __name__ == "__main__":
+    sys.modules.setdefault("backend", sys.modules[__name__])
+
 # Ensure Windows console can print unicode logs.
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -35,17 +38,34 @@ try:
     from utils import HybridSearcher, reciprocal_rank_fusion
 except ModuleNotFoundError:
     from app.utils import HybridSearcher, reciprocal_rank_fusion
+try:
+    from app.password_utils import truncate_bcrypt_password
+except ModuleNotFoundError:
+    from password_utils import truncate_bcrypt_password
+try:
+    from app.auth_bootstrap import bootstrap_default_admin, user_requires_password_change
+except ModuleNotFoundError:
+    from auth_bootstrap import bootstrap_default_admin, user_requires_password_change
+try:
+    from app.password_policy import get_password_policy_error
+except ModuleNotFoundError:
+    from password_policy import get_password_policy_error
 import jieba
 import jieba.analyse
 
 # --- 配置 ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+if project_root not in sys.path:
+    sys.path.append(project_root)
 load_dotenv(os.path.join(current_dir, "..", ".env"))
 
 API_KEY = os.getenv("ALIBABA_API_KEY")
 MONGO_URI = os.getenv("MONGO_URI")
 MILVUS_HOST = os.getenv("MILVUS_HOST", "localhost")
 MILVUS_PORT = os.getenv("MILVUS_PORT", "19530")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "").strip()
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 
 LLM_MODEL_NAME = "qwen2.5-72b-instruct"
 EMBEDDING_MODEL_NAME = "text-embedding-v4"
@@ -121,6 +141,7 @@ except Exception as e:
 
 client = OpenAI(api_key=API_KEY, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1")
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 # --- 模型 ---
 class UserRegister(BaseModel):
@@ -131,6 +152,12 @@ class Token(BaseModel):
     access_token: str
     token_type: str
     username: str
+    role_codes: List[str] = []
+    must_change_password: bool = False
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 class SearchQuery(BaseModel):
     user_id: str
@@ -174,17 +201,17 @@ class BatchSummaryRequest(BaseModel):
 # --- 函数 ---
 def verify_password(plain_password, hashed_password):
     try:
-        # 截取前72位，防止报错
+        # Bcrypt accepts at most 72 bytes, not 72 Unicode characters.
         if not plain_password or not hashed_password:
             return False
-        return pwd_context.verify(plain_password[:72], hashed_password)
+        return pwd_context.verify(truncate_bcrypt_password(plain_password), hashed_password)
     except Exception as e:
         print(f"Password verification error: {e}")
         return False
 
 def get_password_hash(password):
-    # 截取前72位，防止报错
-    return pwd_context.hash(password[:72])
+    # Bcrypt accepts at most 72 bytes, not 72 Unicode characters.
+    return pwd_context.hash(truncate_bcrypt_password(password))
 
 def create_access_token(data: dict):
     try:
@@ -195,6 +222,46 @@ def create_access_token(data: dict):
     except Exception as e:
         print(f"Token creation error: {e}")
         raise
+
+def get_current_auth_user(token: str = Depends(oauth2_scheme)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+        if not username:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+
+    if users_col is None:
+        raise HTTPException(status_code=500, detail="数据库未连接，请检查MongoDB服务")
+
+    user = users_col.find_one({"username": username})
+    if not user:
+        raise credentials_exception
+    return user
+
+def seed_default_admin():
+    try:
+        created = bootstrap_default_admin(
+            users_col,
+            admin_username=ADMIN_USERNAME,
+            admin_password=ADMIN_PASSWORD,
+            hash_password=get_password_hash,
+            now=datetime.datetime.now,
+        )
+        if created:
+            print(f"✅ 默认管理员已创建: {ADMIN_USERNAME}，首次登录后请立即修改密码")
+        elif ADMIN_USERNAME and ADMIN_PASSWORD and get_password_policy_error(ADMIN_PASSWORD):
+            print(f"⚠️ 默认管理员未创建: ADMIN_PASSWORD 不符合密码策略（{get_password_policy_error(ADMIN_PASSWORD)}）")
+    except Exception as e:
+        print(f"⚠️ 默认管理员初始化失败: {e}")
+
+seed_default_admin()
 
 def get_query_embedding(text):
     try:
@@ -367,14 +434,16 @@ def register(user: UserRegister):
         if users_col.find_one({"username": user.username}):
             raise HTTPException(status_code=400, detail="用户名已存在")
         
-        if len(user.password) < 6:
-            raise HTTPException(status_code=400, detail="密码长度至少为6位")
+        policy_error = get_password_policy_error(user.password)
+        if policy_error:
+            raise HTTPException(status_code=400, detail=policy_error)
         
         users_col.insert_one({
             "username": user.username,
             "password_hash": get_password_hash(user.password),
-            "role_codes": ["admin"] if user.username == "admin" else ["user"],
+            "role_codes": ["user"],
             "status": "active",
+            "must_change_password": False,
             "created_at": datetime.datetime.now(),
             "updated_at": datetime.datetime.now()
         })
@@ -440,7 +509,13 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
             print(f"Token creation error: {token_error}")
             raise HTTPException(status_code=500, detail="令牌生成失败，请稍后重试")
         
-        return {"access_token": token, "token_type": "bearer", "username": user["username"]}
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "username": user["username"],
+            "role_codes": user.get("role_codes") or ["user"],
+            "must_change_password": user_requires_password_change(user),
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -449,6 +524,30 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
         print(f"Login error: {e}")
         print(f"Traceback: {error_trace}")
         raise HTTPException(status_code=500, detail=f"登录失败: {str(e)}")
+
+@app.post("/auth/change-password")
+def change_password(req: ChangePasswordRequest, current_user=Depends(get_current_auth_user)):
+    if users_col is None:
+        raise HTTPException(status_code=500, detail="数据库未连接，请检查MongoDB服务")
+
+    policy_error = get_password_policy_error(req.new_password)
+    if policy_error:
+        raise HTTPException(status_code=400, detail=policy_error)
+
+    if not verify_password(req.current_password, current_user.get("password_hash", "")):
+        raise HTTPException(status_code=400, detail="当前密码错误")
+
+    users_col.update_one(
+        {"username": current_user["username"]},
+        {
+            "$set": {
+                "password_hash": get_password_hash(req.new_password),
+                "must_change_password": False,
+                "updated_at": datetime.datetime.now(),
+            }
+        },
+    )
+    return {"msg": "密码修改成功"}
 
 def _save_summary_to_cache(paper_id: int, user_query: str, summary: str):
     """将推荐原因保存到缓存"""
@@ -1453,6 +1552,20 @@ def remove_favorite(req: FavoriteRemoveRequest):
     except Exception as e:
         print(f"Remove favorite error: {e}")
         raise HTTPException(status_code=500, detail=f"取消收藏失败: {str(e)}")
+
+def include_v1_routes():
+    if getattr(app.state, "v1_router_included", False):
+        return
+
+    from app.api.v1.router import router as v1_router
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    app.include_router(v1_router, prefix=settings.api_v1_prefix)
+    app.state.v1_router_included = True
+
+
+include_v1_routes()
 
 if __name__ == "__main__":
     import uvicorn

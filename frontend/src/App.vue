@@ -22,7 +22,11 @@
         <div class="auth-greeting">欢迎回来，开始你的灵感旅程</div>
         <div class="auth-sub">请输入账号密码以登录，或快速注册一个新账户</div>
         <div class="auth-box">
-          <el-tabs v-model="authTab" class="auth-tabs">
+          <div class="auth-mode-switch">
+            <el-button :type="authMode === 'user' ? 'primary' : 'default'" @click="authMode = 'user'">普通用户</el-button>
+            <el-button :type="authMode === 'admin' ? 'primary' : 'default'" @click="authMode = 'admin'">管理员</el-button>
+          </div>
+          <el-tabs v-if="authMode === 'user'" v-model="authTab" class="auth-tabs">
             <el-tab-pane label="登录" name="login">
               <el-form @submit.prevent="handleLogin" class="auth-form" label-position="top">
                 <el-form-item label="账号">
@@ -94,6 +98,25 @@
               </el-form>
             </el-tab-pane>
           </el-tabs>
+          <el-form v-else @submit.prevent="handleAdminLogin" class="auth-form" label-position="top">
+            <el-form-item label="管理员账号">
+              <el-input v-model="adminLoginForm.u" placeholder="请输入管理员账号" size="large" class="auth-input">
+                <template #prefix>
+                  <el-icon><User /></el-icon>
+                </template>
+              </el-input>
+            </el-form-item>
+            <el-form-item label="管理员密码">
+              <el-input v-model="adminLoginForm.p" placeholder="请输入管理员密码" type="password" size="large" class="auth-input">
+                <template #prefix>
+                  <el-icon><Lock /></el-icon>
+                </template>
+              </el-input>
+            </el-form-item>
+            <el-button type="primary" class="primary pill full mt16" @click="handleAdminLogin" :loading="adminLoginLoading">
+              登录管理后台
+            </el-button>
+          </el-form>
         </div>
       </div>
     </div>
@@ -551,7 +574,9 @@ const chat = useChatStore()
 const isLogin = computed(() => !!auth.userId)
 
 const authTab = ref('login')
+const authMode = ref('user')
 const loginForm = ref({ u: '', p: '' })
+const adminLoginForm = ref({ u: '', p: '' })
 const agreeTerms = ref(false)
 const regForm = ref({ u: '', p: '' })
 const searchText = ref('')
@@ -571,6 +596,7 @@ const showGeminiSearch = ref(false)
 // 控制筛选触发时不弹出“找到 X 篇”提示
 const skipResultToast = ref(false)
 const loginLoading = ref(false)
+const adminLoginLoading = ref(false)
 const registerLoading = ref(false)
 const showNoteDialog = ref(false)
 const noteLoading = ref(false)
@@ -712,13 +738,43 @@ const handleLogin = async () => {
   }
 }
 
+const handleAdminLogin = async () => {
+  if (!adminLoginForm.value.u || !adminLoginForm.value.p) {
+    ElMessage.warning('请输入管理员账号和密码')
+    return
+  }
+  adminLoginLoading.value = true
+  try {
+    const result = await auth.doAdminLogin(adminLoginForm.value.u, adminLoginForm.value.p)
+    if (result.success) {
+      ElMessage.success('管理员登录成功')
+      window.location.href = import.meta.env.VITE_ADMIN_URL || '/admin/'
+    } else {
+      ElMessage.error(result.error || '管理员登录失败')
+    }
+  } catch (error) {
+    ElMessage.error('管理员登录失败，请稍后重试')
+    console.error('Admin login error:', error)
+  } finally {
+    adminLoginLoading.value = false
+  }
+}
+
 const handleRegister = async () => {
   if (!regForm.value.u || !regForm.value.p) {
     ElMessage.warning('请输入账号和密码')
     return
   }
-  if (regForm.value.p.length < 6) {
-    ElMessage.warning('密码长度至少为6位')
+  if (regForm.value.p.length < 6 || regForm.value.p.length > 16) {
+    ElMessage.warning('密码长度必须为6到16位')
+    return
+  }
+  if (!/[a-zA-Z]/.test(regForm.value.p) || !/[0-9]/.test(regForm.value.p)) {
+    ElMessage.warning('密码必须同时包含字母和数字')
+    return
+  }
+  if (!/^[a-zA-Z0-9]+$/.test(regForm.value.p)) {
+    ElMessage.warning('密码只能包含字母和数字')
     return
   }
   registerLoading.value = true
@@ -1282,6 +1338,16 @@ onMounted(() => {
   padding: 20px;
   backdrop-filter: blur(8px);
   box-shadow: 0 20px 60px rgba(15, 23, 42, 0.12);
+}
+.auth-mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.auth-mode-switch :global(.el-button) {
+  width: 100%;
+  margin: 0;
 }
 .auth-tabs :global(.el-tabs__item.is-active) {
   color: #111;

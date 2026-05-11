@@ -21,7 +21,9 @@ from app.services.job_runner import JobRunner
 settings = get_settings()
 
 # Include new modular APIs without breaking existing endpoints.
-app.include_router(v1_router, prefix=settings.api_v1_prefix)
+if not getattr(app.state, "v1_router_included", False):
+    app.include_router(v1_router, prefix=settings.api_v1_prefix)
+    app.state.v1_router_included = True
 
 _job_runner = None
 

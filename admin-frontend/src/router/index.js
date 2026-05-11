@@ -36,9 +36,10 @@ const router = createRouter({
 router.beforeEach((to) => {
   const auth = useAuthStore();
   if (to.path === "/login") {
-    if (auth.token) return "/dashboard";
+    if (auth.token && !auth.mustChangePassword) return "/dashboard";
     return true;
   }
+  if (auth.token && auth.mustChangePassword) return "/login";
   if (!auth.token) return "/login";
   return true;
 });

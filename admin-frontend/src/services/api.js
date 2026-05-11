@@ -10,6 +10,14 @@ export const adminLogin = async (username, password) => {
   return data;
 };
 
+export const changePassword = async (currentPassword, newPassword) => {
+  const { data } = await http.post("/auth/change-password", {
+    current_password: currentPassword,
+    new_password: newPassword
+  });
+  return data;
+};
+
 export const listAdminPapers = async ({ page = 1, pageSize = 20, keyword = "", status = "" } = {}) => {
   const { data } = await http.get("/api/v1/admin/papers", {
     params: { page, page_size: pageSize, keyword: keyword || undefined, status: status || undefined }
